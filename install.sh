@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # hyprWhisper Installation Script
+# Installs bash script and QML components for Quickshell
 #
 
 set -euo pipefail
@@ -9,12 +10,14 @@ set -euo pipefail
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
-readonly NC='\033[0m' # No Color
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
 
 # Configuration
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 readonly WHISPER_APPS_DIR="$HOME/Apps"
+readonly QUICKSHELL_MODULE_PATH="$HOME/.config/quickshell/ii/modules/whisper"
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -28,6 +31,10 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
+
 check_fedora() {
     if [[ ! -f /etc/fedora-release ]]; then
         log_warn "This script is optimized for Fedora. Continuing anyway..."
@@ -35,38 +42,23 @@ check_fedora() {
 }
 
 install_dependencies() {
-    log_info "Installing system dependencies..."
+    log_step "Installing system dependencies..."
     
-    local deps=("git" "make" "gcc-c++" "ffmpeg" "wl-clipboard" "libnotify" "ydotool")
+    local deps=("git" "make" "gcc-c++" "ffmpeg" "wl-clipboard")
     
     if command -v dnf &> /dev/null; then
         sudo dnf install -y "${deps[@]}"
-    elif command -v apt &> /dev/null; then
-        log_warn "APT detected. Package names may differ on Debian/Ubuntu."
-        sudo apt update
-        sudo apt install -y git make g++ ffmpeg wl-clipboard libnotify-bin ydotool
     else
         log_error "Unsupported package manager. Please install manually:"
-        echo "  git make gcc-c++ ffmpeg wl-clipboard libnotify ydotool"
+        echo "  git make gcc-c++ ffmpeg wl-clipboard"
         exit 1
     fi
     
-    # Enable ydotool service
-    log_info "Enabling ydotool service..."
-    sudo systemctl enable --now ydotool || {
-        log_warn "Failed to enable ydotool service. You may need to do this manually."
-    }
-    
-    # Add user to input group
-    if ! groups "$USER" | grep -q '\binput\b'; then
-        log_info "Adding user to 'input' group for ydotool..."
-        sudo usermod -aG input "$USER"
-        log_warn "Please log out and back in for group changes to take effect!"
-    fi
+    log_info "Dependencies installed"
 }
 
 compile_whisper() {
-    log_info "Setting up whisper.cpp..."
+    log_step "Setting up whisper.cpp..."
     
     if [[ -d "$WHISPER_APPS_DIR/whisper.cpp" ]]; then
         log_warn "whisper.cpp already exists at $WHISPER_APPS_DIR/whisper.cpp"
@@ -87,25 +79,13 @@ compile_whisper() {
     log_info "Downloading medium model..."
     bash ./models/download-ggml-model.sh medium
     
-    # Compile with CMake (official method)
+    # Compile with CMake
     log_info "Compiling whisper.cpp with CMake..."
     mkdir -p build && cd build
     
-    # Check for GPU support
     if command -v vulkaninfo &> /dev/null; then
-        log_info "Vulkan detected - compiling with GPU support (recommended for Fedora 43+)"
+        log_info "Vulkan detected - compiling with GPU support"
         cmake .. -DGGML_VULKAN=1
-    elif command -v nvcc &> /dev/null; then
-        log_warn "CUDA detected but may have compatibility issues with GCC 14+"
-        log_warn "Consider using Vulkan instead: sudo dnf install vulkan-tools vulkan-loader-devel"
-        read -p "Compile with CUDA anyway? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            cmake .. -DGGML_CUDA=1
-        else
-            log_info "Compiling for CPU only"
-            cmake ..
-        fi
     else
         log_info "Compiling for CPU only"
         cmake ..
@@ -118,7 +98,7 @@ compile_whisper() {
 }
 
 install_script() {
-    log_info "Installing whisper-toggle.sh..."
+    log_step "Installing whisper-toggle.sh..."
     
     mkdir -p "$INSTALL_DIR"
     
@@ -130,13 +110,60 @@ install_script() {
         log_error "whisper-toggle.sh not found in $SCRIPT_DIR"
         exit 1
     fi
+}
+
+install_qml_components() {
+    log_step "Installing QML components..."
     
-    # Check if INSTALL_DIR is in PATH
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        log_warn "$INSTALL_DIR is not in your PATH"
-        echo "Add this to your ~/.bashrc or ~/.zshrc:"
-        echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    # Create directory
+    mkdir -p "$QUICKSHELL_MODULE_PATH"
+    
+    # Check if QML files exist in repo
+    if [[ -f "$SCRIPT_DIR/qml/WhisperState.qml" && -f "$SCRIPT_DIR/qml/WhisperPopup.qml" ]]; then
+        cp "$SCRIPT_DIR/qml/"*.qml "$QUICKSHELL_MODULE_PATH/"
+        log_info "QML components installed to $QUICKSHELL_MODULE_PATH"
+    elif [[ -f "$SCRIPT_DIR/WhisperState.qml" && -f "$SCRIPT_DIR/WhisperPopup.qml" ]]; then
+        # Files in root directory
+        cp "$SCRIPT_DIR/"Whisper*.qml "$QUICKSHELL_MODULE_PATH/"
+        log_info "QML components installed to $QUICKSHELL_MODULE_PATH"
+    else
+        log_warn "QML files not found in repository"
+        log_warn "You need to manually copy them:"
+        echo "  mkdir -p $QUICKSHELL_MODULE_PATH"
+        echo "  cp WhisperState.qml WhisperPopup.qml $QUICKSHELL_MODULE_PATH/"
     fi
+}
+
+show_quickshell_integration() {
+    cat << 'EOF'
+
+================================================================================
+Quickshell Integration Required
+================================================================================
+
+You need to add the Whisper popup to your quickshell configuration.
+
+Edit ~/.config/quickshell/ii/shell.qml and add:
+
+  1. Import at the top:
+     import "modules/whisper" as Whisper
+
+  2. Add component inside your main Shell:
+     Whisper.WhisperPopup {
+         // Auto-shows based on state
+     }
+
+Example:
+
+  Shell {
+      // ... your existing config ...
+      
+      // Add this:
+      Whisper.WhisperPopup {}
+  }
+
+================================================================================
+EOF
 }
 
 show_hyprland_config() {
@@ -146,20 +173,14 @@ show_hyprland_config() {
 Hyprland Configuration
 ================================================================================
 
-Add this to your ~/.config/hypr/hyprland.conf:
+Add to ~/.config/hypr/hyprland.conf:
 
-# hyprWhisper voice-to-text
-# IMPORTANT: $mainMod must be defined at the top of your config!
-# Example: $mainMod = SUPER
-bind = $mainMod, D, exec, ~/.local/bin/whisper-toggle.sh
+    # hyprWhisper voice-to-text
+    bind = $mainMod, D, exec, ~/.local/bin/whisper-toggle.sh
 
-Or use SUPER directly (no variable needed):
-  bind = SUPER, D, exec, ~/.local/bin/whisper-toggle.sh
+Reload Hyprland:
 
-Other options:
-  bind = ALT, D, exec, ~/.local/bin/whisper-toggle.sh
-  bind = SHIFT SUPER, R, exec, ~/.local/bin/whisper-toggle.sh
-  bind = ,XF86AudioMicMute, exec, ~/.local/bin/whisper-toggle.sh
+    hyprctl reload
 
 ================================================================================
 EOF
@@ -173,24 +194,24 @@ Installation Complete!
 ================================================================================
 
 Next steps:
-1. Log out and back in (for ydotool group permissions)
-2. Add the keybinding to your Hyprland config (shown above)
+1. Add WhisperPopup to your shell.qml (see instructions above)
+2. Restart Quickshell or reload configuration
 3. Reload Hyprland: hyprctl reload
-4. Test: Open a text editor and press Super+D (or your chosen keybind)
+4. Test: Press Super+D and speak
 
 Troubleshooting:
 - Check logs: tail -f /tmp/hyprwhisper.log
-- Test manually: ~/.local/bin/whisper-toggle.sh --help
-- Check status: ~/.local/bin/whisper-toggle.sh --status
+- Test script: ~/.local/bin/whisper-toggle.sh --help
+- Check state file: cat /tmp/whisper_state.json
+- Verify QML: ls -la $QUICKSHELL_MODULE_PATH/
 
 Model location: $WHISPER_APPS_DIR/whisper.cpp/models/ggml-medium.bin
 
-For better accuracy, download the medium model:
-  cd $WHISPER_APPS_DIR/whisper.cpp
-  bash ./models/download-ggml-model.sh medium
-
-Then set in your environment:
-  export WHISPER_MODEL=models/ggml-medium.bin
+UI Features:
+- Native QML popup integrated with your theme
+- Shows recording/processing/result phases
+- Auto-closes after 5 seconds
+- Press Ctrl+V to paste text
 
 ================================================================================
 EOF
@@ -199,6 +220,7 @@ EOF
 main() {
     echo "========================================"
     echo "  hyprWhisper Installer"
+    echo "  Native QML UI for Quickshell"
     echo "========================================"
     echo
     
@@ -217,7 +239,9 @@ main() {
     fi
     
     install_script
+    install_qml_components
     
+    show_quickshell_integration
     show_hyprland_config
     show_next_steps
 }

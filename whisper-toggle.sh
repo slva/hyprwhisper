@@ -2,10 +2,8 @@
 #
 # hyprWhisper - Voice-to-text toggle script for Hyprland
 # Uses whisper.cpp for transcription, ffmpeg for recording
+# QML-native UI via state file
 #
-
-# Note: Removed 'set -e' because it causes issues with while loops and conditional checks
-# set -euo pipefail
 
 # ============================================================================
 # CONFIGURATION
@@ -16,6 +14,9 @@ readonly AUDIO_FILE="/tmp/hyprwhisper_audio.wav"
 readonly PID_FILE="/tmp/hyprwhisper_recording.pid"
 readonly OUTPUT_FILE="/tmp/hyprwhisper_output.txt"
 readonly LOG_FILE="/tmp/hyprwhisper.log"
+readonly STATE_FILE="/tmp/whisper_state.json"
+
+readonly PREVIEW_MAX_LENGTH=200            # Max chars for preview (approx 5 lines)
 
 # Whisper executable path (auto-detected)
 WHISPER_BIN=""
@@ -27,6 +28,29 @@ WHISPER_BIN=""
 log_message() {
     local message="$1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" >> "$LOG_FILE"
+}
+
+write_state() {
+    local phase="$1"
+    local message="${2:-}"
+    local text="${3:-}"
+    local error="${4:-false}"
+    
+    cat > "$STATE_FILE" << EOF
+{
+  "phase": "$phase",
+  "message": "$message",
+  "text": "$text",
+  "timestamp": $(date +%s),
+  "error": $error
+}
+EOF
+    log_message "State updated: $phase"
+}
+
+clear_state() {
+    rm -f "$STATE_FILE"
+    log_message "State cleared"
 }
 
 find_whisper_executable() {
@@ -71,34 +95,14 @@ check_dependencies() {
     fi
 }
 
-show_result_wofi() {
-    local text="$1"
-    
-    # Preparar text per mostrar (limitar longitud per pantalla)
-    local display_text="$text"
-    if [[ ${#display_text} -gt 400 ]]; then
-        display_text="${display_text:0:400}..."
-    fi
-    
-    if command -v wofi &> /dev/null; then
-        # Mostrar resultat amb wofi - es tanca automàticament als 5s o amb Enter
-        printf "%s\n" "$display_text" | wofi \
-            --dmenu \
-            --prompt "✓ Text copiat (Enter per tancar)" \
-            --width 650 \
-            --height 280 \
-            --location center \
-            --timeout 5 \
-            2>/dev/null &
-        log_message "Result shown with wofi"
-    fi
-}
-
 start_recording() {
     log_message "Starting recording..."
     
     # Remove old audio file if exists
     [[ -f "$AUDIO_FILE" ]] && rm -f "$AUDIO_FILE"
+    
+    # Write state BEFORE starting recording
+    write_state "recording" "Gravant..."
     
     # Start ffmpeg recording in background
     ffmpeg -f pulse -i default -y -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO_FILE" \
@@ -108,9 +112,6 @@ start_recording() {
     echo "$pid" > "$PID_FILE"
     
     log_message "Recording started with PID: $pid"
-    
-    # Script exits immediately - no UI during recording
-    # User just sees the cursor and speaks
 }
 
 stop_recording_and_transcribe() {
@@ -118,6 +119,9 @@ stop_recording_and_transcribe() {
     pid=$(cat "$PID_FILE")
     
     log_message "Stopping recording (PID: $pid)..."
+    
+    # Update state to processing
+    write_state "processing" "Processant..."
     
     # Stop ffmpeg recording
     if kill -TERM "$pid" 2>/dev/null; then
@@ -143,6 +147,7 @@ stop_recording_and_transcribe() {
     done
     
     if [[ ! -f "$AUDIO_FILE" ]] || [[ ! -s "$AUDIO_FILE" ]]; then
+        write_state "error" "No s'ha gravat àudio" "" "true"
         log_message "ERROR: No audio recorded"
         exit 1
     fi
@@ -152,6 +157,7 @@ stop_recording_and_transcribe() {
     # Transcribe
     log_message "Starting transcription..."
     if ! "$WHISPER_BIN" -m "$WHISPER_DIR/$MODEL" -f "$AUDIO_FILE" -l auto -nt > "$OUTPUT_FILE" 2>> "$LOG_FILE"; then
+        write_state "error" "Transcripció fallida" "" "true"
         log_message "ERROR: Transcription failed"
         exit 1
     fi
@@ -161,6 +167,7 @@ stop_recording_and_transcribe() {
     text=$(tr -d '\n' < "$OUTPUT_FILE" | sed 's/^ *//;s/ *$//')
     
     if [[ -z "$text" ]]; then
+        write_state "error" "No s'ha detectat veu" "" "true"
         log_message "WARNING: No speech detected"
         exit 1
     fi
@@ -171,11 +178,20 @@ stop_recording_and_transcribe() {
     echo -n "$text" | wl-copy
     log_message "Text copied to clipboard"
     
-    # Show result with wofi (auto-closes after 5s)
-    show_result_wofi "$text"
+    # Write result state (QML will auto-close after 5s)
+    write_state "result" "" "$text"
+    log_message "Result state written"
     
-    # Cleanup temp files
+    # Cleanup temp files (keep state file for QML to read)
     rm -f "$AUDIO_FILE" "$OUTPUT_FILE"
+    
+    # Wait for QML to show result, then clear state
+    # QML auto-closes after 5s, but we can clear after 7s to be safe
+    (
+        sleep 7
+        clear_state
+    ) &
+    
     log_message "Cleanup completed"
 }
 
@@ -224,6 +240,7 @@ force_stop() {
         pid=$(cat "$PID_FILE")
         kill -9 "$pid" 2>/dev/null || true
         rm -f "$PID_FILE" "$AUDIO_FILE" "$OUTPUT_FILE"
+        write_state "error" "Gravació aturada manualment" "" "true"
         log_message "Force stop executed"
     else
         echo "No recording in progress"
@@ -258,7 +275,7 @@ main() {
         # Stopping recording - transcribe and show result
         stop_recording_and_transcribe
     else
-        # Starting recording - no UI, just record
+        # Starting recording - write state first
         start_recording
     fi
 }

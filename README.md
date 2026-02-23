@@ -1,22 +1,23 @@
 # hyprWhisper
 
-Voice-to-text integration for Hyprland using OpenAI's Whisper.
+Voice-to-text integration for Hyprland using OpenAI's Whisper with **native QML UI**.
 
 ## Features
 
 - 🎤 One-key toggle to start/stop recording
 - ⚡ Real-time transcription using whisper.cpp (C++)
-- 📋 Automatic clipboard copy and paste
-- 🖥️ Native Wayland support (wl-clipboard)
-- 🔔 Desktop notifications
+- 📋 Automatic clipboard copy
+- 🖥️ **Native QML UI** integrated with Quickshell (no external notifications)
+- 🎨 Follows your Hyprland theme automatically
 - 🔒 No cloud services - 100% local processing
+- 🚀 GPU acceleration with Vulkan
 
 ## Requirements
 
 - **OS**: Fedora Linux (or any Linux with Wayland)
-- **Desktop**: Hyprland (or any Wayland compositor)
+- **Desktop**: Hyprland with **Quickshell**
 - **Hardware**: Microphone
-- **Optional**: NVIDIA GPU for faster transcription
+- **Optional**: NVIDIA/AMD/Intel GPU for faster transcription
 
 ## Quick Install
 
@@ -34,13 +35,8 @@ cd hyprWhisper
 # Required dependencies
 sudo dnf install git make gcc-c++ ffmpeg wl-clipboard
 
-# Recommended: wofi for result display (Hyprland native)
-sudo dnf install wofi
-
-# Optional: ydotool for automatic paste (requires additional setup)
-# sudo dnf install ydotool
-# sudo systemctl enable --now ydotool
-# sudo usermod -aG input $USER
+# Install Quickshell (if not already installed)
+# See: https://github.com/quickshell-dev/quickshell
 ```
 
 ### 2. Compile whisper.cpp (CMake - Official Method)
@@ -57,28 +53,46 @@ bash ./models/download-ggml-model.sh medium
 # Build with CMake
 mkdir -p build && cd build
 
-# For GPU (Vulkan - recommended, supports NVIDIA/AMD/Intel):
-# Note: CUDA has compatibility issues with GCC 14+ on Fedora 43+
+# For GPU (Vulkan - recommended):
 cmake .. -DGGML_VULKAN=1
-
-# Alternative: For NVIDIA GPU (CUDA) - requires GCC 12/13:
-# cmake .. -DGGML_CUDA=1
 
 # For CPU only:
 # cmake ..
 
 # Compile with all CPU cores
 cmake --build . -j$(nproc) --config Release
-
-# Executables location: ./build/bin/
-# - whisper-cli (main executable)
-# - whisper-server (HTTP API)
-# - whisper-stream (real-time)
 ```
 
-**Note:** The old `make -j` method still works but CMake is the officially supported build system.
+### 3. Install QML Components
 
-### 3. Install Script
+Copy the QML files to your quickshell configuration:
+
+```bash
+# Create whisper module directory
+mkdir -p ~/.config/quickshell/ii/modules/whisper
+
+# Copy QML files
+cp /path/to/hyprWhisper/qml/WhisperState.qml ~/.config/quickshell/ii/modules/whisper/
+cp /path/to/hyprWhisper/qml/WhisperPopup.qml ~/.config/quickshell/ii/modules/whisper/
+
+# Add to your shell.qml (see step 4)
+```
+
+### 4. Integrate with Quickshell
+
+Add the Whisper popup to your quickshell configuration. Edit `~/.config/quickshell/ii/shell.qml`:
+
+```qml
+// Add import at the top
+import "modules/whisper" as Whisper
+
+// Add component inside your main Shell
+Whisper.WhisperPopup {
+    // Automatically shows/hides based on state
+}
+```
+
+### 5. Install Script
 
 ```bash
 mkdir -p ~/.local/bin
@@ -86,19 +100,14 @@ cp whisper-toggle.sh ~/.local/bin/
 chmod +x ~/.local/bin/whisper-toggle.sh
 ```
 
-### 4. Configure Hyprland
+### 6. Configure Hyprland
 
 Add to `~/.config/hypr/hyprland.conf`:
 
 ```ini
 # hyprWhisper voice-to-text
-# Note: $mainMod must be defined at the top of your config (e.g., $mainMod = SUPER)
-# Or use SUPER directly: bind = SUPER, D, exec, ~/.local/bin/whisper-toggle.sh
 bind = $mainMod, D, exec, ~/.local/bin/whisper-toggle.sh
 ```
-
-**Note:** `$mainMod` is a variable that must be defined. Most configs have `$mainMod = SUPER` at the top.
-If it doesn't work, use `SUPER` directly: `bind = SUPER, D, exec, ~/.local/bin/whisper-toggle.sh`
 
 Reload Hyprland:
 ```bash
@@ -108,20 +117,45 @@ hyprctl reload
 ## Usage
 
 1. Open any text editor or input field
-2. Press `Super+D` to start recording (no visual feedback - just speak)
-3. Speak clearly
+2. Press `Super+D` to start recording
+3. Speak clearly (popup shows "🎤 Gravant...")
 4. Press `Super+D` again to stop
-5. **Wofi window appears** with the transcribed text (auto-closes after 5s)
-6. Press **Ctrl+V** to paste the text where you want it
+5. Wait for transcription (popup shows "⏳ Processant...")
+6. **Native QML popup** appears with result (auto-closes after 5s)
+7. Press **Ctrl+V** to paste the text
 
-### Interface
+### UI Features
 
-- **During recording**: No window (speak naturally)
-- **After transcription**: Wofi window shows the text
-  - Displays the transcribed text
-  - Auto-closes after 5 seconds
-  - Or press Enter to close immediately
-  - Text is already copied to clipboard
+The native QML popup provides:
+
+- **🎤 Recording phase**: Animated microphone icon with pulse effect
+- **⏳ Processing phase**: Progress indicator with sliding animation
+- **✓ Result phase**: Shows text preview (up to 5 lines), auto-closes in 5s
+- **❌ Error phase**: Clear error messages
+- **🎨 Theme integration**: Uses your Quickshell colors automatically
+- **⌨️ Keyboard shortcuts**: Press `Esc` or `Enter` to close result popup
+
+## How It Works
+
+The script communicates with the QML UI via a JSON state file:
+
+```
+Script (whisper-toggle.sh)          QML (WhisperPopup.qml)
+        |                                    |
+        |  Writes /tmp/whisper_state.json   |
+        |----------------------------------->|
+        |                                    |
+        |  Reads every 200ms                |
+        |<-----------------------------------|
+        |                                    |
+   [recording]                        Shows 🎤 popup
+        |                                    |
+   [processing]                       Shows ⏳ popup
+        |                                    |
+   [result]                           Shows ✓ popup
+        |                                    |
+   [clipboard]                        Auto-closes 5s
+```
 
 ## Configuration
 
@@ -131,9 +165,8 @@ Environment variables (add to `~/.bashrc` or `~/.config/hypr/hyprland.conf` env)
 # Path to whisper.cpp installation
 export WHISPER_DIR="$HOME/Apps/whisper.cpp"
 
-# Model to use (small, medium, large)
+# Model to use
 export WHISPER_MODEL="models/ggml-medium.bin"
-
 ```
 
 Available models:
@@ -141,6 +174,47 @@ Available models:
 - `ggml-small.bin` - Fast, good accuracy
 - `ggml-medium.bin` - Balanced/best (default)
 - `ggml-large.bin` - Best accuracy, slowest
+
+## Customization
+
+### Change Popup Position
+
+Edit `WhisperPopup.qml`:
+
+```qml
+// Center (default)
+anchors.centerIn: parent
+
+// Top center
+anchors.horizontalCenter: parent.horizontalCenter
+anchors.top: parent.top
+anchors.topMargin: 50
+
+// Bottom center
+anchors.horizontalCenter: parent.horizontalCenter
+anchors.bottom: parent.bottom
+anchors.bottomMargin: 50
+```
+
+### Change Auto-close Time
+
+Edit `WhisperPopup.qml`, line:
+
+```qml
+Timer {
+    id: autoCloseTimer
+    interval: 5000  // Change this value (milliseconds)
+    // ...
+}
+```
+
+### Change Polling Interval
+
+Edit `WhisperState.qml`, line:
+
+```qml
+readonly property int pollInterval: 200  // Default: 200ms
+```
 
 ## Commands
 
@@ -160,39 +234,39 @@ whisper-toggle.sh --help
 
 ## Troubleshooting
 
-### Recording works but no text appears
+### No popup appears
 
-Check logs:
+1. Check if quickshell is running: `pgrep -f "qs -c"`
+2. Check QML errors: `journalctl --user -u quickshell -n 50`
+3. Verify state file is created: `cat /tmp/whisper_state.json`
+
+### Popup doesn't auto-close
+
+Check QML component is loaded correctly in your `shell.qml`
+
+### Transcription is slow
+
+- Use Vulkan: `cmake .. -DGGML_VULKAN=1`
+- Use smaller model: `ggml-small.bin`
+- Check GPU is being used: `vulkaninfo | grep deviceName`
+
+### Check logs
+
 ```bash
 tail -f /tmp/hyprwhisper.log
 ```
-
-Test whisper.cpp directly:
-```bash
-ffmpeg -f pulse -i default -t 5 -ar 16000 -ac 1 /tmp/test.wav
-~/Apps/whisper.cpp/build/bin/whisper-cli -m ~/Apps/whisper.cpp/models/ggml-medium.bin -f /tmp/test.wav -l auto -nt
-```
-
-### ydotool paste not working
-
-1. Ensure service is running: `systemctl status ydotool`
-2. Check you're in the `input` group: `groups $USER`
-3. Log out and back in after group changes
-
-### Poor transcription quality
-
-1. Speak clearly and close to microphone
-2. Try the medium model for better accuracy
-3. Set specific language: Edit script and change `-l auto` to `-l ca` (Catalan) or `-l es` (Spanish)
 
 ## Project Structure
 
 ```
 hyprWhisper/
-├── whisper-toggle.sh    # Main toggle script
-├── install.sh           # Installation script
-├── README.md            # This file
-└── AGENTS.md            # Development guidelines
+├── whisper-toggle.sh              # Main script
+├── qml/
+│   ├── WhisperState.qml           # State reader (singleton)
+│   └── WhisperPopup.qml           # UI popup component
+├── install.sh                     # Installation script
+├── README.md                      # This file
+└── AGENTS.md                      # Development guidelines
 ```
 
 ## License
@@ -202,4 +276,5 @@ MIT License - Feel free to use and modify!
 ## Credits
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov
+- [Quickshell](https://github.com/quickshell-dev/quickshell) for the awesome shell framework
 - OpenAI Whisper model
