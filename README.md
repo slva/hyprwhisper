@@ -71,8 +71,7 @@ Copy the QML files to your quickshell configuration:
 # Create whisper module directory
 mkdir -p ~/.config/quickshell/ii/modules/whisper
 
-# Copy QML files
-cp /path/to/hyprWhisper/qml/WhisperState.qml ~/.config/quickshell/ii/modules/whisper/
+# Copy QML file
 cp /path/to/hyprWhisper/qml/WhisperPopup.qml ~/.config/quickshell/ii/modules/whisper/
 
 # Add to your shell.qml (see step 4)
@@ -86,11 +85,14 @@ Add the Whisper popup to your quickshell configuration. Edit `~/.config/quickshe
 // Add import at the top
 import "modules/whisper" as Whisper
 
-// Add component inside your main Shell
-Whisper.WhisperPopup {
-    // Automatically shows/hides based on state
-}
+// Add property to enable/disable
+property bool enableWhisper: true
+
+// Add LazyLoader inside ShellRoot
+LazyLoader { active: enableWhisper; component: Whisper.WhisperPopup {} }
 ```
+
+> **Note:** After modifying `shell.qml`, restart Quickshell (`qs -c ii`) for changes to take effect.
 
 ### 5. Install Script
 
@@ -137,25 +139,32 @@ The native QML popup provides:
 
 ## How It Works
 
-The script communicates with the QML UI via a JSON state file:
+The script uses **Quickshell IPC** to communicate directly with the QML UI:
 
 ```
 Script (whisper-toggle.sh)          QML (WhisperPopup.qml)
         |                                    |
-        |  Writes /tmp/whisper_state.json   |
+        |   qs msg -c ii ipc call whisper    |
         |----------------------------------->|
         |                                    |
-        |  Reads every 200ms                |
-        |<-----------------------------------|
+        |         Inicia ffmpeg              |
+        |         Obre popup 🎤              |
         |                                    |
-   [recording]                        Shows 🎤 popup
+[segona crida]                               |
+        |----------------------------------->|
         |                                    |
-   [processing]                       Shows ⏳ popup
+        |         Atura ffmpeg               |
+        |         Inicia whisper-cli         |
+        |         Mostra popup ⏳            |
         |                                    |
-   [result]                           Shows ✓ popup
+        |         Acaba whisper-cli          |
+        |         Copia wl-copy              |
+        |         Mostra popup ✓             |
         |                                    |
-   [clipboard]                        Auto-closes 5s
+        |         Auto-tanca en 5s           |
 ```
+
+This architecture completely manages its state natively within QML, eliminating the need for temporary state files or polling.
 
 ## Configuration
 
@@ -201,19 +210,11 @@ anchors.bottomMargin: 50
 Edit `WhisperPopup.qml`, line:
 
 ```qml
-Timer {
-    id: autoCloseTimer
-    interval: 5000  // Change this value (milliseconds)
+    // Auto-close timer for result/error
+    Timer {
+        id: autoCloseTimer
+        interval: 5000  // Change this value (milliseconds)
     // ...
-}
-```
-
-### Change Polling Interval
-
-Edit `WhisperState.qml`, line:
-
-```qml
-readonly property int pollInterval: 200  // Default: 200ms
 ```
 
 ## Commands
@@ -236,9 +237,10 @@ whisper-toggle.sh --help
 
 ### No popup appears
 
-1. Check if quickshell is running: `pgrep -f "qs -c"`
-2. Check QML errors: `journalctl --user -u quickshell -n 50`
-3. Verify state file is created: `cat /tmp/whisper_state.json`
+1. Check if Quickshell is running: `pgrep -f "qs -c"`
+2. Restart Quickshell after installing/updating QML files: `qs -c ii`
+3. Verify IPC works manually: `qs -c ii ipc call whisper toggle`
+4. Check Quickshell output in the terminal where `qs -c ii` is running
 
 ### Popup doesn't auto-close
 
@@ -260,10 +262,9 @@ tail -f /tmp/hyprwhisper.log
 
 ```
 hyprWhisper/
-├── whisper-toggle.sh              # Main script
+├── whisper-toggle.sh              # Main script (IPC sender)
 ├── qml/
-│   ├── WhisperState.qml           # State reader (singleton)
-│   └── WhisperPopup.qml           # UI popup component
+│   └── WhisperPopup.qml           # UI popup + logic component
 ├── install.sh                     # Installation script
 ├── README.md                      # This file
 └── AGENTS.md                      # Development guidelines

@@ -119,10 +119,10 @@ install_qml_components() {
     mkdir -p "$QUICKSHELL_MODULE_PATH"
     
     # Check if QML files exist in repo
-    if [[ -f "$SCRIPT_DIR/qml/WhisperState.qml" && -f "$SCRIPT_DIR/qml/WhisperPopup.qml" ]]; then
+    if [[ -f "$SCRIPT_DIR/qml/WhisperPopup.qml" ]]; then
         cp "$SCRIPT_DIR/qml/"*.qml "$QUICKSHELL_MODULE_PATH/"
         log_info "QML components installed to $QUICKSHELL_MODULE_PATH"
-    elif [[ -f "$SCRIPT_DIR/WhisperState.qml" && -f "$SCRIPT_DIR/WhisperPopup.qml" ]]; then
+    elif [[ -f "$SCRIPT_DIR/WhisperPopup.qml" ]]; then
         # Files in root directory
         cp "$SCRIPT_DIR/"Whisper*.qml "$QUICKSHELL_MODULE_PATH/"
         log_info "QML components installed to $QUICKSHELL_MODULE_PATH"
@@ -130,7 +130,7 @@ install_qml_components() {
         log_warn "QML files not found in repository"
         log_warn "You need to manually copy them:"
         echo "  mkdir -p $QUICKSHELL_MODULE_PATH"
-        echo "  cp WhisperState.qml WhisperPopup.qml $QUICKSHELL_MODULE_PATH/"
+        echo "  cp WhisperPopup.qml $QUICKSHELL_MODULE_PATH/"
     fi
 }
 
@@ -148,19 +148,15 @@ Edit ~/.config/quickshell/ii/shell.qml and add:
   1. Import at the top:
      import "modules/whisper" as Whisper
 
-  2. Add component inside your main Shell:
-     Whisper.WhisperPopup {
-         // Auto-shows based on state
-     }
+  2. Add a property to enable/disable it:
+     property bool enableWhisper: true
 
-Example:
+3. Add a LazyLoader inside ShellRoot:
+LazyLoader { active: enableWhisper; component: Whisper.WhisperPopup {} }
 
-  Shell {
-      // ... your existing config ...
-      
-      // Add this:
-      Whisper.WhisperPopup {}
-  }
+IMPORTANT: After installing, you must restart Quickshell for changes
+to take effect. The popup communicates via IPC, so it responds instantly
+to toggle commands without polling.
 
 ================================================================================
 EOF
@@ -195,15 +191,16 @@ Installation Complete!
 
 Next steps:
 1. Add WhisperPopup to your shell.qml (see instructions above)
-2. Restart Quickshell or reload configuration
+2. Restart Quickshell: kill existing qs process, then run 'qs -c ii'
 3. Reload Hyprland: hyprctl reload
 4. Test: Press Super+D and speak
 
 Troubleshooting:
 - Check logs: tail -f /tmp/hyprwhisper.log
 - Test script: ~/.local/bin/whisper-toggle.sh --help
-- Check state file: cat /tmp/whisper_state.json
+- Test IPC directly: qs -c ii ipc call whisper toggle
 - Verify QML: ls -la $QUICKSHELL_MODULE_PATH/
+- If popup doesn't appear, restart Quickshell (required after install)
 
 Model location: $WHISPER_APPS_DIR/whisper.cpp/models/ggml-medium.bin
 
