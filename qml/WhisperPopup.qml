@@ -198,18 +198,18 @@ Scope {
         WlrLayershell.layer: WlrLayer.Overlay
         exclusiveZone: 0
 
-        implicitWidth: 500
-        implicitHeight: contentColumn.height + 80
+        implicitWidth: 380
+        implicitHeight: contentRow.height + 40
 
         color: "transparent"
 
         Rectangle {
-            width: 500
-            height: contentColumn.height + 80
+            width: 380
+            height: contentRow.height + 40
             x: 0
             y: 0
             color: Appearance.colors.colLayer0 || "#1e1e1e"
-            radius: 16
+            radius: 12
             border.color: scope.currentPhaseColor
             border.width: 2
 
@@ -225,20 +225,20 @@ Scope {
                 z: -1
             }
 
-            Column {
-                id: contentColumn
-                x: 30
-                y: 30
+            Row {
+                id: contentRow
+                x: 20
+                y: 20
                 spacing: 16
-                width: 440
+                width: 340
 
-        // Icon
-        Text {
-            text: scope.currentIcon
-            font.family: "Material Icons"
-            font.pixelSize: 48
-            color: scope.currentPhaseColor
-                    x: (parent.width - width) / 2
+                // Icon
+                Text {
+                    text: scope.currentIcon
+                    font.family: "Material Icons"
+                    font.pixelSize: 32
+                    color: scope.currentPhaseColor
+                    anchors.verticalCenter: parent.verticalCenter
 
                     // Pulse animation for recording
                     SequentialAnimation on opacity {
@@ -249,71 +249,72 @@ Scope {
                     }
                 }
 
-                // Main text
-                Text {
-                    text: scope.displayText
-                    font.pixelSize: 18
-                    font.weight: Font.Medium
-                    color: Appearance.colors.colText || "#ffffff"
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    horizontalAlignment: Text.AlignHCenter
-                    lineHeight: 1.3
-                    x: 0
-                }
+                Column {
+                    width: parent.width - 48
+                    spacing: 4
+                    anchors.verticalCenter: parent.verticalCenter
 
-                // Subtext for result
-                Text {
-                    text: "(Text copiat • Ctrl+V)"
-                    font.pixelSize: 13
-                    color: Appearance.colors.colSubtext || "#aaaaaa"
-                    visible: scope.phase === "result"
-                    x: (parent.width - width) / 2
-                }
+                    // Main text
+                    Text {
+                        text: scope.displayText
+                        font.pixelSize: 16
+                        font.weight: Font.Medium
+                        color: Appearance.colors.colText || "#ffffff"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.2
+                    }
 
-                // Progress bar for processing
-                Rectangle {
-                    id: progressBarBg
-                    width: parent.width * 0.6
-                    height: 4
-                    color: Appearance.colors.colLayer2 || "#333333"
-                    radius: 2
-                    visible: scope.phase === "processing"
-                    x: (parent.width - width) / 2
+                    // Subtext for result
+                    Text {
+                        text: "(Text copiat • Ctrl+V)"
+                        font.pixelSize: 11
+                        color: Appearance.colors.colSubtext || "#aaaaaa"
+                        visible: scope.phase === "result"
+                    }
 
+                    // Progress bar for processing
                     Rectangle {
-                        id: progressIndicator
-                        width: parent.width * 0.3
-                        height: parent.height
-                        color: scope.currentPhaseColor
-                        radius: parent.radius
+                        id: progressBarBg
+                        width: parent.width
+                        height: 3
+                        color: Appearance.colors.colLayer2 || "#333333"
+                        radius: 2
+                        visible: scope.phase === "processing"
 
-                        SequentialAnimation on x {
-                            running: scope.phase === "processing"
-                            loops: Animation.Infinite
-                            NumberAnimation {
-                                from: 0
-                                to: progressBarBg.width - progressIndicator.width
-                                duration: 1500
-                                easing.type: Easing.InOutQuad
-                            }
-                            NumberAnimation {
-                                from: progressBarBg.width - progressIndicator.width
-                                to: 0
-                                duration: 1500
-                                easing.type: Easing.InOutQuad
+                        Rectangle {
+                            id: progressIndicator
+                            width: parent.width * 0.3
+                            height: parent.height
+                            color: scope.currentPhaseColor
+                            radius: parent.radius
+
+                            SequentialAnimation on x {
+                                running: scope.phase === "processing"
+                                loops: Animation.Infinite
+                                NumberAnimation {
+                                    from: 0
+                                    to: progressBarBg.width - progressIndicator.width
+                                    duration: 1500
+                                    easing.type: Easing.InOutQuad
+                                }
+                                NumberAnimation {
+                                    from: progressBarBg.width - progressIndicator.width
+                                    to: 0
+                                    duration: 1500
+                                    easing.type: Easing.InOutQuad
+                                }
                             }
                         }
                     }
-                }
 
-                // Countdown for result
-                Text {
-                    text: "Tanca en " + Math.ceil(autoCloseTimer.remainingTime / 1000) + "s"
-                    font.pixelSize: 11
-                    color: Appearance.colors.colSubtext || "#888888"
-                    visible: scope.phase === "result" || scope.phase === "error"
-                    x: (parent.width - width) / 2
+                    // Countdown for result
+                    Text {
+                        text: "Tanca en " + Math.ceil(autoCloseTimer.remainingTime / 1000) + "s"
+                        font.pixelSize: 10
+                        color: Appearance.colors.colSubtext || "#888888"
+                        visible: scope.phase === "result" || scope.phase === "error"
+                    }
                 }
             }
 
