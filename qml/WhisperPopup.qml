@@ -277,41 +277,47 @@ Scope {
                     radius: parent.radius
                     width: 0
 
-                    states: [
-                        State {
-                            name: "processing"
-                            when: scope.phase === "processing"
-                            PropertyChanges {
-                                target: progressIndicator
-                                width: parent.width * 0.3
-                            }
-                        },
-                        State {
-                            name: "filling"
-                            when: scope.phase === "result" || scope.phase === "error"
-                            PropertyChanges {
-                                target: progressIndicator
-                                width: parent.width
-                            }
+                states: [
+                    State {
+                        name: "processing"
+                        when: scope.phase === "processing"
+                        PropertyChanges {
+                            target: progressIndicator
+                            width: parent.width * 0.3
+                            x: 0
                         }
-                    ]
+                    },
+                    State {
+                        name: "filling"
+                        when: scope.phase === "result" || scope.phase === "error"
+                        PropertyChanges {
+                            target: progressIndicator
+                            width: parent.width
+                            x: 0
+                        }
+                    }
+                ]
 
-                    transitions: [
-                        Transition {
-                            from: "processing"
-                            to: "filling"
-                            SequentialAnimation {
-                                NumberAnimation { 
-                                    property: "width"
-                                    duration: 3000
-                                    easing.type: Easing.InOutQuad
-                                }
-                                ScriptAction {
-                                    script: scope.reset()
-                                }
+                transitions: [
+                    Transition {
+                        from: "processing"
+                        to: "filling"
+                        SequentialAnimation {
+                            // Reset position and width first
+                            PropertyAction { property: "x"; value: 0 }
+                            PropertyAction { property: "width"; value: 0 }
+                            // Then animate filling from left to right
+                            NumberAnimation { 
+                                property: "width"
+                                duration: 3000
+                                easing.type: Easing.InOutQuad
+                            }
+                            ScriptAction {
+                                script: scope.reset()
                             }
                         }
-                    ]
+                    }
+                ]
 
                     // Indeterminate animation for processing
                     SequentialAnimation on x {
