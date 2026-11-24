@@ -12,49 +12,27 @@ Scope {
     // ========================================================================
     property string phase: "idle"       // idle, recording, processing, result, error
     property string resultText: ""
-    property string errorMessage: ""
+
+    // Raw transcription output, collected while whisper-cli runs
+    property string transcriptOutput: ""
+    property bool transcribeExited: false
+    property int transcribeExitCode: -1
 
     // ========================================================================
-    // COMPUTED PROPERTIES (for use in PanelWindow)
+    // CONFIG
     // ========================================================================
-    property string currentIcon: {
-        switch(phase) {
-            case "recording": return "\ue029"; // mic
-            case "processing": return "\ue88c"; // hourglass
-            case "result": return "\ue86c"; // check_circle
-            case "error": return "\ue000"; // error
-            default: return "";
-        }
-    }
+    // Read from Quickshell's environment (e.g. `env = WHISPER_DIR,...` in hyprland.conf)
+    readonly property string whisperDir: Quickshell.env("WHISPER_DIR") || (Quickshell.env("HOME") + "/Apps/whisper.cpp")
+    readonly property string whisperModel: Quickshell.env("WHISPER_MODEL") || "models/ggml-medium.bin"
+    // XDG_RUNTIME_DIR is private to the user (0700), unlike /tmp
+    readonly property string audioFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/hyprwhisper_audio.wav"
 
-    property color currentPhaseColor: {
-        switch(phase) {
-            case "recording": return Appearance.colors.colPrimary || "#ff5555";
-            case "processing": return Appearance.colors.colSecondary || "#ffff55";
-            case "result": return "#55ff55";
-            case "error": return "#ff5555";
-            default: return Appearance.colors.colText || "#ffffff";
-        }
-    }
-
-    property string displayText: {
-        switch(phase) {
-            case "recording": return "Gravant...";
-            case "processing": return "Processant...";
-            case "result": return truncateText(resultText, 5);
-            case "error": return errorMessage || "Error";
-            default: return "";
-        }
-    }
-
-    // Whisper config (same defaults as the old script)
-    readonly property string whisperDir: "/home/slva/Apps/whisper.cpp"
-    readonly property string whisperModel: "models/ggml-medium.bin"
-    readonly property string audioFile: "/tmp/hyprwhisper_audio.wav"
-    readonly property string logFile: "/tmp/hyprwhisper.log"
+    readonly property int autoCloseMs: 3000
+    readonly property int bottomMargin: 20    // distance from the bottom edge of the screen
+    readonly property int processingTimeoutMs: 5 * 60 * 1000
 
     // ========================================================================
-    // IPC HANDLER - receives toggle/stop from keybind
+    // IPC HANDLER - receives toggle/stop/status from the keybind script
     // ========================================================================
     IpcHandler {
         target: "whisper"
@@ -70,10 +48,13 @@ Scope {
         }
 
         function stop(): void {
-            if (scope.phase === "recording") {
-                recordProcess.signal(15); // SIGTERM
-            }
             scope.reset();
+            if (recordProcess.running) recordProcess.signal(15); // SIGTERM
+            if (transcribeProcess.running) transcribeProcess.signal(15);
+        }
+
+        function status(): string {
+            return scope.phase;
         }
     }
 
@@ -81,56 +62,106 @@ Scope {
     // FUNCTIONS
     // ========================================================================
     function startRecording() {
-        // Clean old audio
-        cleanProcess.running = true;
+        // A previous ffmpeg/whisper-cli may still be shutting down after a stop
+        if (recordProcess.running || transcribeProcess.running) {
+            console.warn("[hyprWhisper] Previous process still running, ignoring toggle");
+            return;
+        }
 
         phase = "recording";
         resultText = "";
-        errorMessage = "";
 
-        // Start ffmpeg recording
+        // ffmpeg overwrites the old audio file thanks to -y
         recordProcess.running = true;
     }
 
     function stopRecordingAndTranscribe() {
         phase = "processing";
+        processingTimeout.restart();
 
         // Stop ffmpeg via SIGTERM (INT doesn't work well with ffmpeg)
         recordProcess.signal(15);
     }
 
-    function handleTranscriptionResult(text) {
-        const trimmed = text.replace(/^\s+|\s+$/g, '');
-        if (trimmed.length === 0) {
-            phase = "error";
-            errorMessage = "No s'ha detectat veu";
-            autoCloseTimer.start();
+    // Called whenever ffmpeg stops running, including when it failed to start
+    function recordingEnded() {
+        if (phase === "processing") {
+            transcriptOutput = "";
+            transcribeExited = false;
+            transcribeExitCode = -1;
+            transcribeProcess.running = true;
             return;
         }
 
-        resultText = trimmed;
+        if (phase === "recording") {
+            showError("No s'ha pogut gravar l'àudio (ffmpeg ha fallat)");
+        }
+        deleteAudio();
+    }
+
+    // Called whenever whisper-cli stops running, including when it failed to start
+    function transcriptionEnded() {
+        deleteAudio();
+        if (phase !== "processing") return; // stopped or timed out
+
+        processingTimeout.stop();
+
+        if (!transcribeExited) {
+            showError("No s'ha pogut executar " + transcribeProcess.whisperBin);
+        } else if (transcribeExitCode !== 0) {
+            showError("Transcripció fallida (codi " + transcribeExitCode + ")");
+        } else {
+            handleTranscriptionResult(transcriptOutput);
+        }
+    }
+
+    function handleTranscriptionResult(text) {
+        const cleaned = cleanTranscript(text);
+        if (cleaned.length === 0) {
+            showError("No s'ha detectat veu");
+            return;
+        }
+
+        resultText = cleaned;
         phase = "result";
 
-        // Copy to clipboard
         clipboardProcess.running = true;
+        autoCloseTimer.restart();
+    }
 
-        // Start auto-close countdown
-        autoCloseTimer.start();
+    function showError(message) {
+        console.warn("[hyprWhisper] " + message);
+        processingTimeout.stop();
+        phase = "error";
+        autoCloseTimer.restart();
     }
 
     function reset() {
         phase = "idle";
         resultText = "";
-        errorMessage = "";
         autoCloseTimer.stop();
-        countdownTimer.stop();
+        processingTimeout.stop();
+    }
+
+    function deleteAudio() {
+        cleanProcess.running = true;
+    }
+
+    // Joins whisper segments into one line and drops non-speech tags
+    // such as [BLANK_AUDIO], [ Silence ] or (music)
+    function cleanTranscript(text) {
+        return (text || "")
+            .split("\n")
+            .map(line => line.trim())
+            .filter(line => line.length > 0 && !/^[\[(][^\])]*[\])]$/.test(line))
+            .join(" ");
     }
 
     // ========================================================================
     // PROCESSES
     // ========================================================================
 
-    // Clean old audio file
+    // Remove the recorded audio once it is no longer needed
     Process {
         id: cleanProcess
         running: false
@@ -146,15 +177,12 @@ Scope {
             "-y", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
             scope.audioFile
         ]
-        onExited: (exitCode, exitStatus) => {
-            if (scope.phase === "processing") {
-                // Recording was stopped intentionally, start transcription
-                transcribeProcess.running = true;
-            }
-        }
+        onRunningChanged: if (!running) scope.recordingEnded()
     }
 
     // Whisper transcription
+    // Signal order on a normal exit: streamFinished -> exited -> runningChanged.
+    // If the binary can't be started only runningChanged is emitted.
     Process {
         id: transcribeProcess
         running: false
@@ -167,24 +195,20 @@ Scope {
             "-nt"
         ]
         stdout: StdioCollector {
-            onStreamFinished: {
-                scope.handleTranscriptionResult(this.text);
-            }
+            onStreamFinished: scope.transcriptOutput = this.text
         }
         onExited: (exitCode, exitStatus) => {
-            if (exitCode !== 0 && scope.phase === "processing") {
-                scope.phase = "error";
-                scope.errorMessage = "Transcripció fallida";
-                scope.autoCloseTimer.start();
-            }
+            scope.transcribeExited = true;
+            scope.transcribeExitCode = exitCode;
         }
+        onRunningChanged: if (!running) scope.transcriptionEnded()
     }
 
-    // Clipboard copy
+    // Clipboard copy ("--" so text starting with "-" isn't parsed as an option)
     Process {
         id: clipboardProcess
         running: false
-        command: ["wl-copy", scope.resultText]
+        command: ["wl-copy", "--", scope.resultText]
     }
 
     // ========================================================================
@@ -198,61 +222,73 @@ Scope {
         WlrLayershell.layer: WlrLayer.Overlay
         exclusiveZone: 0
 
+        // Only anchored to the bottom edge: horizontally centered, at the bottom
+        anchors.bottom: true
+        margins.bottom: scope.bottomMargin
+
         implicitWidth: 250
         implicitHeight: 50
 
         color: "transparent"
 
         Rectangle {
-            width: 250
-            height: 50
-            x: 0
-            y: 0
+            anchors.fill: parent
             color: Appearance.colors.colLayer0 || "#1e1e1e"
             radius: 12
             border.color: Appearance.colors.colPrimary || "#cccccc"
             border.width: 2
 
-            // Shadow
-            Rectangle {
-                width: parent.width
-                height: parent.height
-                x: -4
-                y: -4
-                color: "#000000"
-                opacity: 0.3
-                radius: parent.radius + 2
-                z: -1
-            }
-
-            // Waveform for recording (35 bars, fills width)
+            // Waveform for recording: pill-shaped bars mirrored around the
+            // horizontal center line, short at the edges and tall in the middle
             Row {
                 id: waveformContainer
-                spacing: 2
+
+                readonly property int barCount: 27
+                readonly property int barWidth: 4
+                readonly property real minBarHeight: barWidth * 2   // keeps the pill shape
+                readonly property real maxBarHeight: 34
+
+                spacing: barWidth
+                height: maxBarHeight
                 visible: scope.phase === "recording"
                 anchors.centerIn: parent
 
-                Repeater {
-                    model: 35
-                    Rectangle {
-                        width: 4
-                        height: 30
-                        color: Appearance.colors.colPrimary || "#cbc4cb"
-                        radius: 2
-                        anchors.bottom: parent.bottom
+                // 0..1 bell curve: ~0.1 at the edges, 1 in the center
+                function envelope(index) {
+                    const t = (index + 0.5) / barCount;
+                    return 0.1 + 0.9 * Math.pow(Math.sin(Math.PI * t), 1.5);
+                }
 
-                        SequentialAnimation on height {
-                            loops: Animation.Infinite
+                function randomHeight(index) {
+                    const level = envelope(index) * (0.2 + 0.8 * Math.random());
+                    return minBarHeight + (maxBarHeight - minBarHeight) * level;
+                }
+
+                Repeater {
+                    model: waveformContainer.barCount
+                    Rectangle {
+                        id: bar
+                        required property int index
+
+                        width: waveformContainer.barWidth
+                        height: waveformContainer.randomHeight(index)
+                        radius: width / 2
+                        color: Appearance.colors.colPrimary || "#cbc4cb"
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Behavior on height {
                             NumberAnimation {
-                                to: 5 + Math.random() * 25
-                                duration: 100 + Math.random() * 150
+                                duration: 140
                                 easing.type: Easing.InOutQuad
                             }
-                            NumberAnimation {
-                                to: 10 + Math.random() * 20
-                                duration: 100 + Math.random() * 150
-                                easing.type: Easing.InOutQuad
-                            }
+                        }
+
+                        // New random height on every tick, only while recording
+                        Timer {
+                            interval: 110 + Math.random() * 140
+                            running: waveformContainer.visible
+                            repeat: true
+                            onTriggered: bar.height = waveformContainer.randomHeight(bar.index)
                         }
                     }
                 }
@@ -277,47 +313,44 @@ Scope {
                     radius: parent.radius
                     width: 0
 
-                states: [
-                    State {
-                        name: "processing"
-                        when: scope.phase === "processing"
-                        PropertyChanges {
-                            target: progressIndicator
-                            width: parent.width * 0.3
-                            x: 0
+                    states: [
+                        State {
+                            name: "processing"
+                            when: scope.phase === "processing"
+                            PropertyChanges {
+                                target: progressIndicator
+                                width: progressBarBg.width * 0.3
+                                x: 0
+                            }
+                        },
+                        State {
+                            name: "filling"
+                            when: scope.phase === "result" || scope.phase === "error"
+                            PropertyChanges {
+                                target: progressIndicator
+                                width: progressBarBg.width
+                                x: 0
+                            }
                         }
-                    },
-                    State {
-                        name: "filling"
-                        when: scope.phase === "result" || scope.phase === "error"
-                        PropertyChanges {
-                            target: progressIndicator
-                            width: parent.width
-                            x: 0
-                        }
-                    }
-                ]
+                    ]
 
-                transitions: [
-                    Transition {
-                        from: "processing"
-                        to: "filling"
-                        SequentialAnimation {
-                            // Reset position and width first
-                            PropertyAction { property: "x"; value: 0 }
-                            PropertyAction { property: "width"; value: 0 }
-                            // Then animate filling from left to right
-                            NumberAnimation { 
-                                property: "width"
-                                duration: 3000
-                                easing.type: Easing.InOutQuad
-                            }
-                            ScriptAction {
-                                script: scope.reset()
+                    // Visual countdown only; autoCloseTimer closes the popup
+                    transitions: [
+                        Transition {
+                            to: "filling"
+                            SequentialAnimation {
+                                // Reset position and width first
+                                PropertyAction { property: "x"; value: 0 }
+                                PropertyAction { property: "width"; value: 0 }
+                                // Then animate filling from left to right
+                                NumberAnimation {
+                                    property: "width"
+                                    duration: scope.autoCloseMs
+                                    easing.type: Easing.InOutQuad
+                                }
                             }
                         }
-                    }
-                ]
+                    ]
 
                     // Indeterminate animation for processing
                     SequentialAnimation on x {
@@ -342,12 +375,9 @@ Scope {
 
             // Click to close
             MouseArea {
-                width: parent.width
-                height: parent.height
+                anchors.fill: parent
                 enabled: scope.phase === "result" || scope.phase === "error"
-                onClicked: {
-                    scope.reset();
-                }
+                onClicked: scope.reset()
             }
         }
     }
@@ -359,71 +389,21 @@ Scope {
     // Auto-close timer for result/error
     Timer {
         id: autoCloseTimer
-        interval: 5000
+        interval: scope.autoCloseMs
+        running: false
+        onTriggered: scope.reset()
+    }
+
+    // Safety net in case whisper-cli hangs
+    Timer {
+        id: processingTimeout
+        interval: scope.processingTimeoutMs
         running: false
         onTriggered: {
-            scope.reset();
+            if (scope.phase !== "processing") return;
+            scope.showError("Temps d'espera esgotat");
+            if (recordProcess.running) recordProcess.signal(15);
+            if (transcribeProcess.running) transcribeProcess.signal(15);
         }
-
-        property int remainingTime: interval
-        onRunningChanged: if (running) remainingTime = interval
-    }
-
-    // Countdown display timer
-    Timer {
-        id: countdownTimer
-        interval: 1000
-        running: autoCloseTimer.running
-        repeat: true
-        onTriggered: {
-            if (autoCloseTimer.remainingTime > 0) {
-                autoCloseTimer.remainingTime -= 1000;
-            }
-        }
-    }
-
-    // ========================================================================
-    // HELPER FUNCTIONS
-    // ========================================================================
-    function getIcon() {
-        switch(scope.phase) {
-            case "recording": return "\ue029";    // mic
-            case "processing": return "\ue88c";  // hourglass
-            case "result": return "\ue86c";      // check_circle
-            case "error": return "\ue000";       // error
-            default: return "";
-        }
-    }
-
-    function getPhaseColor() {
-        switch(scope.phase) {
-            case "recording": return Appearance.colors.colPrimary || "#ff5555";
-            case "processing": return Appearance.colors.colSecondary || "#ffff55";
-            case "result": return "#55ff55";
-            case "error": return "#ff5555";
-            default: return Appearance.colors.colText || "#ffffff";
-        }
-    }
-
-    function getDisplayText() {
-        switch(scope.phase) {
-            case "recording":
-                return "Gravant...";
-            case "processing":
-                return "Processant...";
-            case "result":
-                return truncateText(scope.resultText, 5);
-            case "error":
-                return scope.errorMessage || "Error";
-            default:
-                return "";
-        }
-    }
-
-    function truncateText(text, maxLines) {
-        if (!text) return "";
-        const lines = text.split('\n');
-        if (lines.length <= maxLines) return text;
-        return lines.slice(0, maxLines).join('\n') + "...";
     }
 }
