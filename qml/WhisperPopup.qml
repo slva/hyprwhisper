@@ -17,6 +17,7 @@ Scope {
     property string transcriptOutput: ""
     property bool transcribeExited: false
     property int transcribeExitCode: -1
+    property int clipboardExitCode: -1
 
     // ========================================================================
     // CONFIG
@@ -26,6 +27,11 @@ Scope {
     readonly property string whisperModel: Quickshell.env("WHISPER_MODEL") || "models/ggml-medium.bin"
     // XDG_RUNTIME_DIR is private to the user (0700), unlike /tmp
     readonly property string audioFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/hyprwhisper_audio.wav"
+    // Paste the result into the focused window (WHISPER_AUTOPASTE=0 keeps it clipboard-only)
+    readonly property bool autoPaste: Quickshell.env("WHISPER_AUTOPASTE") !== "0"
+
+    // Window classes that paste with Ctrl+Shift+V instead of Ctrl+V
+    readonly property var terminalClassRe: /^(kitty|foot|footclient|alacritty|org\.wezfurlong\.wezterm|com\.mitchellh\.ghostty|org\.kde\.konsole|org\.gnome\.terminal|org\.gnome\.ptyxis|ptyxis|com\.gexperts\.tilix|xterm)$/i
 
     readonly property int autoCloseMs: 3000
     readonly property int bottomMargin: 20    // distance from the bottom edge of the screen
@@ -125,8 +131,81 @@ Scope {
         resultText = cleaned;
         phase = "result";
 
+        // The popup is hidden during "result"; the timer only guards against a stuck paste
+        clipboardExitCode = -1;
         clipboardProcess.running = true;
         autoCloseTimer.restart();
+    }
+
+    // Copy/paste done (or skipped): back to idle unless something else took over
+    function finishResult() {
+        if (phase === "result") reset();
+    }
+
+    // Called whenever wl-copy stops running, including when it failed to start
+    function clipboardEnded() {
+        if (clipboardExitCode !== 0) {
+            showError("No s'ha pogut copiar al porta-retalls");
+            return;
+        }
+        // Skip pasting if the popup was closed or a new dictation started meanwhile
+        if (autoPaste && phase === "result") {
+            activeWindowProcess.running = true;
+        } else {
+            finishResult();
+        }
+    }
+
+    // Picks the paste shortcut from `hyprctl activewindow -j` and sends it
+    // with Hyprland's send_shortcut dispatcher. Virtual keyboards (wtype) are
+    // not used: Hyprland matches their keycodes against the real keymap, so
+    // wtype's Ctrl+Shift+V triggered the Ctrl+Shift+Escape keybind.
+    function pasteIntoActiveWindow(json) {
+        let win = null;
+        try {
+            win = JSON.parse(json);
+        } catch (e) {
+            console.warn("[hyprWhisper] Could not read the active window, text left in the clipboard");
+            finishResult();
+            return;
+        }
+        // No focused window (e.g. empty workspace): the text stays in the clipboard
+        if (!win || !/^0x[0-9a-f]+$/.test(win.address || "")) {
+            finishResult();
+            return;
+        }
+
+        const mods = terminalClassRe.test(win.class || "") ? "CTRL SHIFT" : "CTRL";
+        const target = "address:" + win.address;
+
+        // Lua config syntax first; the classic `sendshortcut` is the fallback
+        pasteProcess.fallbackCommand = ["hyprctl", "dispatch", "sendshortcut", mods + ", V, " + target];
+        runPaste(["hyprctl", "dispatch",
+            'hl.dsp.send_shortcut({ mods = "' + mods + '", key = "V", window = "' + target + '" })']);
+    }
+
+    function runPaste(command) {
+        pasteProcess.command = command;
+        pasteProcess.output = "";
+        pasteProcess.running = true;
+    }
+
+    // hyprctl reports dispatch errors on stdout and still exits 0
+    function pasteEnded() {
+        const output = pasteProcess.output.trim();
+        if (!/error/i.test(output)) {
+            if (output !== "" && output !== "ok") console.warn("[hyprWhisper] Paste: " + output);
+            finishResult();
+            return;
+        }
+        if (pasteProcess.fallbackCommand.length > 0) {
+            const fallback = pasteProcess.fallbackCommand;
+            pasteProcess.fallbackCommand = [];
+            runPaste(fallback);
+            return;
+        }
+        console.warn("[hyprWhisper] Paste failed, text left in the clipboard: " + output);
+        finishResult();
     }
 
     function showError(message) {
@@ -209,6 +288,31 @@ Scope {
         id: clipboardProcess
         running: false
         command: ["wl-copy", "--", scope.resultText]
+        onExited: (exitCode, exitStatus) => scope.clipboardExitCode = exitCode
+        onRunningChanged: if (!running) scope.clipboardEnded()
+    }
+
+    // Focused window, to choose between Ctrl+V and Ctrl+Shift+V (terminals)
+    Process {
+        id: activeWindowProcess
+        running: false
+        command: ["hyprctl", "activewindow", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: scope.pasteIntoActiveWindow(this.text)
+        }
+    }
+
+    // Sends the paste shortcut straight to the focused window (hyprctl dispatch)
+    Process {
+        id: pasteProcess
+        running: false
+        property var fallbackCommand: []
+        property string output: ""
+        command: []
+        stdout: StdioCollector {
+            onStreamFinished: pasteProcess.output = this.text
+        }
+        onRunningChanged: if (!running) scope.pasteEnded()
     }
 
     // ========================================================================
@@ -217,7 +321,8 @@ Scope {
     PanelWindow {
         id: root
 
-        visible: scope.phase !== "idle"
+        // Hidden during "result": the text is pasted right away, nothing to show
+        visible: scope.phase !== "idle" && scope.phase !== "result"
 
         WlrLayershell.layer: WlrLayer.Overlay
         exclusiveZone: 0
@@ -294,14 +399,14 @@ Scope {
                 }
             }
 
-            // Progress bar (indeterminate for processing, filling for result/error)
+            // Progress bar (indeterminate for processing, filling countdown for error)
             Rectangle {
                 id: progressBarBg
                 width: parent.width - 40
                 height: 4
                 color: Appearance.colors.colLayer2 || "#333333"
                 radius: 2
-                visible: scope.phase === "processing" || scope.phase === "result" || scope.phase === "error"
+                visible: scope.phase === "processing" || scope.phase === "error"
                 anchors.centerIn: parent
 
                 Rectangle {
@@ -325,7 +430,7 @@ Scope {
                         },
                         State {
                             name: "filling"
-                            when: scope.phase === "result" || scope.phase === "error"
+                            when: scope.phase === "error"
                             PropertyChanges {
                                 target: progressIndicator
                                 width: progressBarBg.width
@@ -376,7 +481,7 @@ Scope {
             // Click to close
             MouseArea {
                 anchors.fill: parent
-                enabled: scope.phase === "result" || scope.phase === "error"
+                enabled: scope.phase === "error"
                 onClicked: scope.reset()
             }
         }
@@ -386,7 +491,7 @@ Scope {
     // TIMERS
     // ========================================================================
 
-    // Auto-close timer for result/error
+    // Auto-close timer for error (and safety net for a stuck paste in result)
     Timer {
         id: autoCloseTimer
         interval: scope.autoCloseMs

@@ -186,9 +186,9 @@ qs -c ii ipc call whisper toggle
 - `WhisperPopup.qml` handles all logic:
   - Exposes an `IpcHandler` (target `"whisper"`) with `toggle()`, `stop()` and `status(): string`.
   - Manages internal state (`idle`, `recording`, `processing`, `result`, `error`).
-  - Uses `Process` components to asynchronously execute `ffmpeg` (recording), `whisper-cli` (transcription), `wl-copy` (clipboard) and `rm` (audio cleanup).
+  - Uses `Process` components to asynchronously execute `ffmpeg` (recording), `whisper-cli` (transcription), `wl-copy` (clipboard), `hyprctl activewindow -j` + `hyprctl dispatch` send_shortcut (auto-paste) and `rm` (audio cleanup).
   - Uses `StdioCollector` to read transcription output directly from stdout.
-  - Reads `WHISPER_DIR` / `WHISPER_MODEL` from Quickshell's environment via `Quickshell.env()`.
+  - Reads `WHISPER_DIR` / `WHISPER_MODEL` / `WHISPER_AUTOPASTE` from Quickshell's environment via `Quickshell.env()`.
 - Fully integrated with Quickshell theme (`Appearance.colors`).
 
 **Process lifecycle (Quickshell `Process`):**
@@ -200,13 +200,16 @@ qs -c ii ipc call whisper toggle
 **Phases:**
 1. **recording**: Animated waveform. ffmpeg is running.
 2. **processing**: Sliding indeterminate progress bar. ffmpeg stopped, whisper-cli running.
-3. **result**: Progress bar fills as a countdown. Text copied with wl-copy. Auto-closes in 3s (`autoCloseMs`).
-4. **error**: Same countdown in red. The reason is logged with `console.warn("[hyprWhisper] ...")`. Auto-closes in 3s.
+3. **result**: Popup hidden. Text copied with wl-copy, then pasted into the focused window with Hyprland's `send_shortcut` (Ctrl+V, or Ctrl+Shift+V for terminal classes in `terminalClassRe`), then back to `idle` (`finishResult()`). `autoCloseTimer` is only a safety net if the paste chain gets stuck.
+4. **error**: Red progress bar that fills as a countdown. The reason is logged with `console.warn("[hyprWhisper] ...")`. Auto-closes in 3s (`autoCloseMs`).
 
 **Key design decisions:**
 - True native QML app: No temporary state files, no polling, no external state management.
 - Pure IPC architecture matching Quickshell's design patterns.
-- Minimal popup: no text preview, the result goes straight to the clipboard.
+- Minimal popup: no text preview, the result goes straight to the clipboard and is pasted.
+- Auto-paste sends the paste shortcut instead of typing the text, and targets the focused window by `address:` with `send_shortcut`. The Lua syntax (`hl.dsp.send_shortcut({...})`) is tried first and the classic `sendshortcut` is the fallback; `hyprctl` reports errors on stdout with exit code 0, so the output is checked.
+- Don't use `wtype`/virtual keyboards for the shortcut: Hyprland matches their keycodes against the real keymap, so wtype's Ctrl+Shift+V fired the Ctrl+Shift+Escape keybind (task manager). Typing text with wtype also breaks non-ASCII characters in Chromium/Electron.
+- No focused window (empty workspace) → nothing is pasted; paste failures only log a warning (the text is still in the clipboard).
 - Transcript cleanup: segments joined into one line, non-speech tags like `[BLANK_AUDIO]` dropped.
 - Audio lives in `$XDG_RUNTIME_DIR` and is deleted after transcription or stop.
 - Requires Quickshell restart after installation to load the QML components properly.
@@ -243,6 +246,7 @@ Environment Variables (script):
 Environment Variables (Quickshell process, e.g. `env =` in hyprland.conf):
   WHISPER_DIR     Path to whisper.cpp directory (default: ~/Apps/whisper.cpp)
   WHISPER_MODEL   Model path relative to WHISPER_DIR (default: models/ggml-medium.bin)
+  WHISPER_AUTOPASTE  0 = clipboard only, don't paste into the focused window (default: 1)
 ```
 
 ## Hyprland Integration

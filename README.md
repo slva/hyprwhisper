@@ -6,7 +6,7 @@ Voice-to-text integration for Hyprland using OpenAI's Whisper (via whisper.cpp) 
 
 - 🎤 One-key toggle to start/stop recording
 - ⚡ Fast local transcription with whisper.cpp (C++), language auto-detected
-- 📋 Automatic clipboard copy
+- 📋 Pastes the text straight into the focused window (and keeps it in the clipboard)
 - 🖥️ **Native QML UI** integrated with Quickshell (no external notifications)
 - 🎨 Follows your Quickshell (`ii`) theme colors automatically
 - 🔒 No cloud services - 100% local processing; the recording is deleted after use
@@ -170,8 +170,18 @@ whisper-toggle.sh --status   # should print: idle
 3. Speak
 4. Press `Super+Alt+D` again to stop
 5. Wait for the transcription (the popup shows a sliding progress bar)
-6. The text is copied to the clipboard and the bar fills up as a countdown (closes after 3s)
-7. Press **Ctrl+V** to paste the text
+6. The popup closes and the text is pasted into the focused window (and copied to the clipboard)
+
+### Auto-paste
+
+After copying with `wl-copy`, hyprWhisper sends the paste shortcut straight to the focused window
+with Hyprland's `send_shortcut` dispatcher (no extra tools or permissions; works with both the Lua
+and the classic config). Terminals (kitty, foot, Alacritty,
+WezTerm, Ghostty, Konsole, GNOME Terminal, Ptyxis, Tilix, xterm) get **Ctrl+Shift+V**, every other
+window **Ctrl+V**; the window class comes from `hyprctl activewindow -j`. If no window is focused,
+the text just stays in the clipboard.
+
+Set `WHISPER_AUTOPASTE=0` (see [Configuration](#configuration)) to only copy to the clipboard.
 
 ### UI Features
 
@@ -179,10 +189,10 @@ The popup is a small bar at the bottom center of the screen that shows the curre
 
 - **Recording**: Animated waveform
 - **Processing**: Indeterminate sliding progress bar
-- **Result**: Bar fills up as a countdown, then the popup closes (3s)
-- **Error**: Same countdown in red; the reason is logged (see [Check logs](#check-logs))
+- **Result**: The popup closes right away and the text is pasted
+- **Error**: Red bar that fills up as a countdown, then the popup closes (3s); the reason is logged (see [Check logs](#check-logs))
 - **Theme integration**: Uses your Quickshell theme colors automatically
-- **Close early**: click the popup or press the keybind again
+- **Close an error early**: click the popup or press the keybind again
 
 Whisper output is cleaned before copying: segments are joined into a single line and
 non-speech tags such as `[BLANK_AUDIO]` are dropped. If nothing is left, it's treated as an error.
@@ -204,9 +214,10 @@ whisper-toggle.sh                     WhisperPopup.qml
         |                                    |
         |                                    |  processing -> result
         |                                    |  copies text with wl-copy
+        |                                    |  pastes it with hyprctl (send_shortcut)
         |                                    |  deletes the audio file
         |                                    |
-        |                                    |  auto-closes after 3s -> idle
+        |                                    |  hides the popup -> idle
 ```
 
 State lives entirely in QML: no state files, no polling. Before calling, the script checks
@@ -225,12 +236,14 @@ them where Quickshell is started (in your Hyprland config, which launches `qs`) 
 -- Lua config (e.g. ~/.config/hypr/custom/env.lua)
 hl.env("WHISPER_DIR", os.getenv("HOME") .. "/Apps/whisper.cpp")  -- default: $HOME/Apps/whisper.cpp
 hl.env("WHISPER_MODEL", "models/ggml-small.bin")                 -- default: models/ggml-medium.bin
+hl.env("WHISPER_AUTOPASTE", "0")                                 -- default: 1 (paste into focused window)
 ```
 
 ```ini
 # Classic config (hyprland.conf)
 env = WHISPER_DIR,/home/you/Apps/whisper.cpp
 env = WHISPER_MODEL,models/ggml-small.bin
+env = WHISPER_AUTOPASTE,0
 ```
 
 `WHISPER_MODEL` is relative to `WHISPER_DIR`. Download other models with
@@ -278,7 +291,7 @@ margins.top: 50
 // Screen center: remove the anchors and margins
 ```
 
-### Change Auto-close Time
+### Change the Error Auto-close Time
 
 ```qml
 readonly property int autoCloseMs: 3000  // milliseconds

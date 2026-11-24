@@ -311,7 +311,7 @@ Next steps:
 2. Restart Quickshell: qs kill -c $QS_CONFIG && qs -c $QS_CONFIG -d
 3. Add the keybind if you don't have one yet (see instructions above)
 4. Check: ~/.local/bin/whisper-toggle.sh --status  (should print: idle)
-5. Test: press Super+Alt+D, speak, press it again and paste with Ctrl+V
+5. Test: press Super+Alt+D, speak, press it again: the text is pasted into the focused window
 
 Troubleshooting:
 - Check the module is loaded: ~/.local/bin/whisper-toggle.sh --status
@@ -324,8 +324,8 @@ Model location: $WHISPER_APPS_DIR/whisper.cpp/models/ggml-medium.bin
 UI Features:
 - Native QML popup integrated with your theme
 - Waveform while recording, progress bar while transcribing
-- Auto-closes 3 seconds after the result (red bar on error)
-- Press Ctrl+V to paste text
+- Closes and pastes the text into the focused window (also kept in the clipboard)
+- Red bar on error, auto-closes after 3 seconds
 
 ================================================================================
 EOF
