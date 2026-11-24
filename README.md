@@ -1,23 +1,24 @@
 # hyprWhisper
 
-Voice-to-text integration for Hyprland using OpenAI's Whisper with **native QML UI**.
+Voice-to-text integration for Hyprland using OpenAI's Whisper (via whisper.cpp) with a **native Quickshell QML UI**.
 
 ## Features
 
 - 🎤 One-key toggle to start/stop recording
-- ⚡ Real-time transcription using whisper.cpp (C++)
+- ⚡ Fast local transcription with whisper.cpp (C++), language auto-detected
 - 📋 Automatic clipboard copy
 - 🖥️ **Native QML UI** integrated with Quickshell (no external notifications)
-- 🎨 Follows your Hyprland theme automatically
-- 🔒 No cloud services - 100% local processing
-- 🚀 GPU acceleration with Vulkan
+- 🎨 Follows your Quickshell (`ii`) theme colors automatically
+- 🔒 No cloud services - 100% local processing; the recording is deleted after use
+- 🚀 GPU acceleration with CUDA or Vulkan
 
 ## Requirements
 
-- **OS**: Fedora Linux (or any Linux with Wayland)
-- **Desktop**: Hyprland with **Quickshell**
-- **Hardware**: Microphone
-- **Optional**: NVIDIA/AMD/Intel GPU for faster transcription
+- **OS**: Linux with Wayland. The installer supports Fedora and Arch Linux / CachyOS
+- **Desktop**: Hyprland with **Quickshell** running the **`ii` config** from [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland)
+  (`WhisperPopup.qml` uses its `qs.modules.common` module for theme colors)
+- **Audio**: PipeWire (with `pipewire-pulse`) or PulseAudio, and a microphone
+- **Optional**: NVIDIA GPU + CUDA toolkit, or any Vulkan GPU, for faster transcription
 
 ## Quick Install
 
@@ -27,74 +28,110 @@ cd hyprWhisper
 ./install.sh
 ```
 
+The installer asks whether to install system dependencies and whether to (re)compile whisper.cpp,
+then installs `whisper-toggle.sh` and the QML component. The GPU backend is auto-detected
+(CUDA > Vulkan > CPU); force it with `WHISPER_BACKEND=cuda|vulkan|cpu ./install.sh`.
+Use `QS_CONFIG=<name>` if your Quickshell config isn't called `ii`.
+
+It does **not** edit your `shell.qml` or your Hyprland keybinds: do steps 4 and 6 below by hand.
+
 ## Manual Installation
 
-### 1. Install Dependencies (Fedora)
+### 1. Install Dependencies
 
 ```bash
-# Required dependencies
-sudo dnf install git make gcc-c++ ffmpeg wl-clipboard
+# Fedora
+sudo dnf install git make cmake gcc-c++ ffmpeg wl-clipboard
+# For the Vulkan build also: vulkan-headers vulkan-loader-devel glslc spirv-headers-devel
+
+# Arch Linux / CachyOS
+sudo pacman -S --needed git make cmake gcc ffmpeg wl-clipboard
+# For the CUDA build also: cuda
+# For the Vulkan build also: vulkan-headers vulkan-icd-loader shaderc spirv-headers
 
 # Install Quickshell (if not already installed)
-# See: https://github.com/quickshell-dev/quickshell
+# See: https://quickshell.org
 ```
 
-### 2. Compile whisper.cpp (CMake - Official Method)
+### 2. Compile whisper.cpp
 
 ```bash
 mkdir -p ~/Apps
 cd ~/Apps
-git clone https://github.com/ggerganov/whisper.cpp.git
+git clone https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
 
-# Download model (small = fast, medium = balanced/best, large = most accurate)
+# Download model (small = fast, medium = balanced (default), large-v3 = most accurate)
 bash ./models/download-ggml-model.sh medium
 
 # Build with CMake
 mkdir -p build && cd build
-
-# For GPU (Vulkan - recommended):
-cmake .. -DGGML_VULKAN=1
-
-# For CPU only:
-# cmake ..
-
-# Compile with all CPU cores
-cmake --build . -j$(nproc) --config Release
 ```
 
-### 3. Install QML Components
-
-Copy the QML files to your quickshell configuration:
+Then configure **one** backend:
 
 ```bash
-# Create whisper module directory
+# NVIDIA GPU (CUDA) - fastest on NVIDIA, never picks an integrated GPU.
+# Paths below are for Arch. nvcc doesn't accept the newest GCC, so pass the host
+# compiler your distro configures for it (Arch: NVCC_CCBIN in /etc/profile.d/cuda.sh).
+# CMAKE_CUDA_ARCHITECTURES is your GPU's compute capability without the dot
+# (nvidia-smi --query-gpu=compute_cap --format=csv,noheader), e.g. 89 = RTX 40xx.
+cmake .. -DGGML_CUDA=1 \
+  -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15 \
+  -DCMAKE_CUDA_ARCHITECTURES=89
+
+# Vulkan (NVIDIA/AMD/Intel). With hybrid graphics it uses device 0,
+# which may be the integrated GPU:
+cmake .. -DGGML_VULKAN=1
+
+# CPU only:
+cmake ..
+```
+
+And build:
+
+```bash
+cmake --build . -j"$(nproc)" --config Release
+```
+
+> If CMake fails with a missing tool from a previous build (e.g. `/usr/bin/gmake`),
+> remove the stale cache first: `rm -rf CMakeCache.txt CMakeFiles`.
+
+### 3. Install the QML Component
+
+```bash
 mkdir -p ~/.config/quickshell/ii/modules/whisper
-
-# Copy QML file
 cp /path/to/hyprWhisper/qml/WhisperPopup.qml ~/.config/quickshell/ii/modules/whisper/
-
-# Add to your shell.qml (see step 4)
 ```
 
 ### 4. Integrate with Quickshell
 
-Add the Whisper popup to your quickshell configuration. Edit `~/.config/quickshell/ii/shell.qml`:
+Edit `~/.config/quickshell/ii/shell.qml`. The import goes with the other imports; the property
+and the `LazyLoader` go **inside** `ShellRoot`:
 
 ```qml
-// Add import at the top
 import "modules/whisper" as Whisper
 
-// Add property to enable/disable
-property bool enableWhisper: true
+ShellRoot {
+    id: root
+    property bool enableWhisper: true   // set to false to disable hyprWhisper
 
-// Add LazyLoader inside ShellRoot
-LazyLoader { active: enableWhisper; component: Whisper.WhisperPopup {} }
+    LazyLoader { active: enableWhisper; component: Whisper.WhisperPopup {} }
+
+    // ... the rest of your existing config ...
+}
 ```
 
-> **Note:** After modifying `shell.qml`, restart Quickshell (`qs -c ii`) for changes to take effect.
+Then restart Quickshell:
 
-### 5. Install Script
+```bash
+qs kill -c ii && qs -c ii -d
+```
+
+> `shell.qml` belongs to dots-hyprland, so updating the dotfiles may overwrite this change.
+
+### 5. Install the Script
 
 ```bash
 mkdir -p ~/.local/bin
@@ -102,120 +139,166 @@ cp whisper-toggle.sh ~/.local/bin/
 chmod +x ~/.local/bin/whisper-toggle.sh
 ```
 
-### 6. Configure Hyprland
+### 6. Configure the Hyprland Keybind
 
-Add to `~/.config/hypr/hyprland.conf`:
+`Super+D` is already used by `ii` (Window: Maximize), so the suggested key is **`Super+Alt+D`**.
 
-```ini
-# hyprWhisper voice-to-text
-bind = $mainMod, D, exec, ~/.local/bin/whisper-toggle.sh
+Lua config (`~/.config/hypr/custom/keybinds.lua` in dots-hyprland):
+
+```lua
+hl.bind("SUPER+ALT+D", hl.dsp.exec_cmd("$HOME/.local/bin/whisper-toggle.sh"), {description = "Whisper: toggle dictation"})
 ```
 
-Reload Hyprland:
+Classic config (`~/.config/hypr/hyprland.conf`):
+
+```ini
+bind = SUPER ALT, D, exec, ~/.local/bin/whisper-toggle.sh
+```
+
+Reload Hyprland with `hyprctl reload`. See `config/hyprland.conf` for other key options.
+
+### 7. Verify
+
 ```bash
-hyprctl reload
+whisper-toggle.sh --status   # should print: idle
 ```
 
 ## Usage
 
 1. Open any text editor or input field
-2. Press `Super+D` to start recording
-3. Speak clearly (popup shows "🎤 Gravant...")
-4. Press `Super+D` again to stop
-5. Wait for transcription (popup shows "⏳ Processant...")
-6. **Native QML popup** appears with result (auto-closes after 5s)
+2. Press `Super+Alt+D` to start recording (the popup shows an animated waveform)
+3. Speak
+4. Press `Super+Alt+D` again to stop
+5. Wait for the transcription (the popup shows a sliding progress bar)
+6. The text is copied to the clipboard and the bar fills up as a countdown (closes after 3s)
 7. Press **Ctrl+V** to paste the text
 
 ### UI Features
 
-The native QML popup provides:
+The popup is a small bar at the bottom center of the screen that shows the current phase:
 
-- **🎤 Recording phase**: Animated microphone icon with pulse effect
-- **⏳ Processing phase**: Progress indicator with sliding animation
-- **✓ Result phase**: Shows text preview (up to 5 lines), auto-closes in 5s
-- **❌ Error phase**: Clear error messages
-- **🎨 Theme integration**: Uses your Quickshell colors automatically
-- **⌨️ Keyboard shortcuts**: Press `Esc` or `Enter` to close result popup
+- **Recording**: Animated waveform
+- **Processing**: Indeterminate sliding progress bar
+- **Result**: Bar fills up as a countdown, then the popup closes (3s)
+- **Error**: Same countdown in red; the reason is logged (see [Check logs](#check-logs))
+- **Theme integration**: Uses your Quickshell theme colors automatically
+- **Close early**: click the popup or press the keybind again
+
+Whisper output is cleaned before copying: segments are joined into a single line and
+non-speech tags such as `[BLANK_AUDIO]` are dropped. If nothing is left, it's treated as an error.
 
 ## How It Works
 
-The script uses **Quickshell IPC** to communicate directly with the QML UI:
+The script uses **Quickshell IPC** to talk to the QML component, which runs all the logic:
 
 ```
-Script (whisper-toggle.sh)          QML (WhisperPopup.qml)
+whisper-toggle.sh                     WhisperPopup.qml
         |                                    |
-        |   qs msg -c ii ipc call whisper    |
-        |----------------------------------->|
+        | qs -c ii ipc call whisper toggle   |
+        |----------------------------------->|  idle -> recording
+        |                                    |  starts ffmpeg, shows waveform
         |                                    |
-        |         Inicia ffmpeg              |
-        |         Obre popup 🎤              |
+[second press]                               |
+        |----------------------------------->|  recording -> processing
+        |                                    |  stops ffmpeg, runs whisper-cli
         |                                    |
-[segona crida]                               |
-        |----------------------------------->|
+        |                                    |  processing -> result
+        |                                    |  copies text with wl-copy
+        |                                    |  deletes the audio file
         |                                    |
-        |         Atura ffmpeg               |
-        |         Inicia whisper-cli         |
-        |         Mostra popup ⏳            |
-        |                                    |
-        |         Acaba whisper-cli          |
-        |         Copia wl-copy              |
-        |         Mostra popup ✓             |
-        |                                    |
-        |         Auto-tanca en 5s           |
+        |                                    |  auto-closes after 3s -> idle
 ```
 
-This architecture completely manages its state natively within QML, eliminating the need for temporary state files or polling.
+State lives entirely in QML: no state files, no polling. Before calling, the script checks
+`qs ipc show` so it can report when Quickshell isn't running or the module isn't loaded.
+
+The recording is stored in `$XDG_RUNTIME_DIR/hyprwhisper_audio.wav` (private to your user) and deleted
+as soon as the transcription finishes or is stopped. `whisper-cli` runs as a new process for each
+transcription, so the model only uses (V)RAM while transcribing and is freed when it exits.
 
 ## Configuration
 
-Environment variables (add to `~/.bashrc` or `~/.config/hypr/hyprland.conf` env):
+The QML component reads these environment variables **from Quickshell's own environment**, so set
+them where Quickshell is started (in your Hyprland config, which launches `qs`) and restart Quickshell:
 
-```bash
-# Path to whisper.cpp installation
-export WHISPER_DIR="$HOME/Apps/whisper.cpp"
-
-# Model to use
-export WHISPER_MODEL="models/ggml-medium.bin"
+```lua
+-- Lua config (e.g. ~/.config/hypr/custom/env.lua)
+hl.env("WHISPER_DIR", os.getenv("HOME") .. "/Apps/whisper.cpp")  -- default: $HOME/Apps/whisper.cpp
+hl.env("WHISPER_MODEL", "models/ggml-small.bin")                 -- default: models/ggml-medium.bin
 ```
 
-Available models:
-- `ggml-tiny.bin` - Fastest, least accurate
-- `ggml-small.bin` - Fast, good accuracy
-- `ggml-medium.bin` - Balanced/best (default)
-- `ggml-large.bin` - Best accuracy, slowest
+```ini
+# Classic config (hyprland.conf)
+env = WHISPER_DIR,/home/you/Apps/whisper.cpp
+env = WHISPER_MODEL,models/ggml-small.bin
+```
+
+`WHISPER_MODEL` is relative to `WHISPER_DIR`. Download other models with
+`bash ./models/download-ggml-model.sh <name>` inside the whisper.cpp directory:
+
+- `tiny` - Fastest, least accurate
+- `small` - Fast, good accuracy
+- `medium` - Balanced (default)
+- `large-v3-turbo` - Close to large-v3 accuracy, much faster
+- `large-v3` - Best accuracy, slowest
+
+Script and installer variables:
+
+| Variable | Used by | Default | Description |
+|---|---|---|---|
+| `QS_CONFIG` | script, installer | `ii` | Quickshell config name |
+| `WHISPER_BACKEND` | installer | `auto` | `auto`, `cuda`, `vulkan` or `cpu` |
+| `INSTALL_DIR` | installer | `~/.local/bin` | Where `whisper-toggle.sh` is installed |
 
 ## Customization
 
+All of these are in `qml/WhisperPopup.qml`. After editing, copy it again and restart Quickshell:
+
+```bash
+cp qml/WhisperPopup.qml ~/.config/quickshell/ii/modules/whisper/ && qs kill -c ii && qs -c ii -d
+```
+
 ### Change Popup Position
 
-Edit `WhisperPopup.qml`:
+The popup is a layer-shell `PanelWindow`, horizontally centered at the bottom of the screen.
+It's centered in the free area, so space reserved by bars (e.g. the `ii` vertical bar) is excluded.
 
 ```qml
-// Center (default)
-anchors.centerIn: parent
+// Distance from the bottom edge
+readonly property int bottomMargin: 20
 
-// Top center
-anchors.horizontalCenter: parent.horizontalCenter
-anchors.top: parent.top
-anchors.topMargin: 50
+// In the PanelWindow - bottom center (default)
+anchors.bottom: true
+margins.bottom: scope.bottomMargin
 
-// Bottom center
-anchors.horizontalCenter: parent.horizontalCenter
-anchors.bottom: parent.bottom
-anchors.bottomMargin: 50
+// Top center instead
+anchors.top: true
+margins.top: 50
+
+// Screen center: remove the anchors and margins
 ```
 
 ### Change Auto-close Time
 
-Edit `WhisperPopup.qml`, line:
+```qml
+readonly property int autoCloseMs: 3000  // milliseconds
+```
+
+### Change the Waveform
+
+Properties of the waveform `Row`:
 
 ```qml
-    // Auto-close timer for result/error
-    Timer {
-        id: autoCloseTimer
-        interval: 5000  // Change this value (milliseconds)
-    // ...
+readonly property int barCount: 27
+readonly property int barWidth: 4
+readonly property real minBarHeight: barWidth * 2
+readonly property real maxBarHeight: 34
 ```
+
+### Force a Language
+
+The language is auto-detected (`-l auto`). To force one, change it in the `transcribeProcess`
+command, e.g. `"-l", "ca"`.
 
 ## Commands
 
@@ -223,10 +306,10 @@ Edit `WhisperPopup.qml`, line:
 # Toggle recording/transcription
 whisper-toggle.sh
 
-# Check if recording
+# Print current phase (idle, recording, processing, result, error)
 whisper-toggle.sh --status
 
-# Force stop if stuck
+# Force stop recording/transcription if stuck
 whisper-toggle.sh --stop
 
 # Show help
@@ -237,35 +320,55 @@ whisper-toggle.sh --help
 
 ### No popup appears
 
-1. Check if Quickshell is running: `pgrep -f "qs -c"`
-2. Restart Quickshell after installing/updating QML files: `qs -c ii`
-3. Verify IPC works manually: `qs -c ii ipc call whisper toggle`
-4. Check Quickshell output in the terminal where `qs -c ii` is running
+1. Run `whisper-toggle.sh --status`: it tells you if Quickshell isn't running or the module isn't loaded
+2. Restart Quickshell after installing/updating QML files: `qs kill -c ii && qs -c ii -d`
+3. Check that `target whisper` appears in `qs -c ii ipc show`
+4. Check the Quickshell logs (see below)
+5. Make sure the keybind doesn't collide with another one (same `modmask` on the same key):
+   `hyprctl binds | grep -B3 -A3 "key: D$" | grep -E "modmask|description"`
 
-### Popup doesn't auto-close
+### Popup stays in "processing"
 
-Check QML component is loaded correctly in your `shell.qml`
+Run `whisper-toggle.sh --stop`. There is also a 5 minute safety timeout, after which it shows an error.
 
 ### Transcription is slow
 
-- Use Vulkan: `cmake .. -DGGML_VULKAN=1`
-- Use smaller model: `ggml-small.bin`
-- Check GPU is being used: `vulkaninfo | grep deviceName`
+- Build with GPU support: `WHISPER_BACKEND=cuda ./install.sh` (or `vulkan`)
+- Use a smaller model: `small` or `large-v3-turbo` instead of `large-v3`
+- Check which GPU is used:
+  ```bash
+  ~/Apps/whisper.cpp/build/bin/whisper-cli -m ~/Apps/whisper.cpp/models/ggml-medium.bin \
+    -f ~/Apps/whisper.cpp/samples/jfk.wav 2>&1 | grep -E "using (CUDA|Vulkan)|total time"
+  ```
+- On laptops with hybrid graphics, a Vulkan build uses device 0 (often the integrated GPU); prefer CUDA on NVIDIA
+- The first transcription after boot is slower while the model is read from disk (and, with Vulkan, shaders are compiled)
+
+### Errors after a CUDA update
+
+The CUDA build links against a specific CUDA runtime (e.g. `libcudart.so.13`). After a major CUDA
+upgrade, recompile: `WHISPER_BACKEND=cuda ./install.sh`.
 
 ### Check logs
 
+Errors (ffmpeg failing, `whisper-cli` not found, transcription failures) are logged by Quickshell
+with the `[hyprWhisper]` prefix:
+
 ```bash
-tail -f /tmp/hyprwhisper.log
+qs log -c ii | grep hyprWhisper
 ```
 
 ## Project Structure
 
 ```
 hyprWhisper/
-├── whisper-toggle.sh              # Main script (IPC sender)
-├── qml/
-│   └── WhisperPopup.qml           # UI popup + logic component
+├── whisper-toggle.sh              # Keybind script (IPC client)
 ├── install.sh                     # Installation script
+├── qml/
+│   └── WhisperPopup.qml           # UI popup + all the logic
+├── config/
+│   └── hyprland.conf              # Example Hyprland keybinds and env vars
+├── docs/
+│   └── ffmpeg_streaming_research.md  # Notes for a possible streaming mode
 ├── README.md                      # This file
 └── AGENTS.md                      # Development guidelines
 ```
@@ -276,6 +379,7 @@ MIT License - Feel free to use and modify!
 
 ## Credits
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov
-- [Quickshell](https://github.com/quickshell-dev/quickshell) for the awesome shell framework
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) by Georgi Gerganov
+- [Quickshell](https://quickshell.org) for the awesome shell framework
+- [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) for the `ii` config
 - OpenAI Whisper model
