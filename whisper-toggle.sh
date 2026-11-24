@@ -21,13 +21,14 @@ Usage: $(basename "$0") [OPTIONS]
 
 Options:
   -h, --help      Show this help message
-  -s, --stop      Force stop recording if stuck
-  --status        Check if Quickshell is running
+  -s, --stop      Force stop recording/transcription if stuck
+  --status        Print the current phase (idle, recording, processing, result, error)
 
 Environment Variables:
-  WHISPER_DIR     Path to whisper.cpp directory (default: ~/Apps/whisper.cpp)
-  WHISPER_MODEL   Model filename (default: models/ggml-medium.bin)
   QS_CONFIG       Quickshell config name (default: ii)
+
+  WHISPER_DIR and WHISPER_MODEL are read by Quickshell itself, so they must be
+  set in Quickshell's environment (e.g. 'env = WHISPER_DIR,...' in hyprland.conf).
 
 Examples:
   $(basename "$0")              # Toggle recording/transcription
@@ -35,12 +36,25 @@ Examples:
 EOF
 }
 
-check_quickshell() {
-    if ! qs -c "$QS_CONFIG" ipc call TEST_ALIVE 2>/dev/null; then
+# Ensures Quickshell is running and the WhisperPopup module is loaded.
+# `qs ipc call` exits 0 even when the target doesn't exist, so check `ipc show`.
+check_whisper() {
+    local targets
+    if ! targets=$(qs -c "$QS_CONFIG" ipc show 2>/dev/null); then
         echo "ERROR: Quickshell is not running" >&2
         echo "Start it with: qs -c $QS_CONFIG" >&2
         exit 1
     fi
+
+    if ! grep -qx "target whisper" <<< "$targets"; then
+        echo "ERROR: WhisperPopup is not loaded in Quickshell config '$QS_CONFIG'" >&2
+        echo "Add it to shell.qml and restart Quickshell (see README)" >&2
+        exit 1
+    fi
+}
+
+whisper_call() {
+    qs -c "$QS_CONFIG" ipc call whisper "$1"
 }
 
 # ============================================================================
@@ -54,25 +68,28 @@ main() {
             exit 0
             ;;
         -s|--stop)
-            check_quickshell
-            qs -c "$QS_CONFIG" ipc call whisper stop
+            check_whisper
+            whisper_call stop
             echo "Stop signal sent"
             exit 0
             ;;
         --status)
-            if qs -c "$QS_CONFIG" ipc call TEST_ALIVE 2>/dev/null; then
-                echo "Quickshell is running"
-                exit 0
-            else
-                echo "Quickshell is not running"
-                exit 1
-            fi
+            check_whisper
+            whisper_call status
+            exit 0
+            ;;
+        "")
+            ;;
+        *)
+            echo "ERROR: Unknown option '$1'" >&2
+            show_help >&2
+            exit 1
             ;;
     esac
 
     # Default: toggle
-    check_quickshell
-    qs -c "$QS_CONFIG" ipc call whisper toggle
+    check_whisper
+    whisper_call toggle
 }
 
 main "$@"
